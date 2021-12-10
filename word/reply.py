@@ -147,5 +147,83 @@ labels = np.array( labels)
 # print(targets.shape) # (65436,)
 # print(contexts.shape) # (65436, 5)
 # print(labels.shape) # (65436, 5)
-print()
+print(targets)
+print(contexts)
+print(labels)
 
+# [1286 1286 1286 ... 2050 1402 1402]
+
+# [[ 344  170   19  826   57]
+ # [  34    1   20   84   11]
+ # [   4  280 1633    3    9]
+ # ...
+ # [ 186  234    0 1303   50]
+ # [ 674  444    1    9   23]
+ # [  28  364   77   14   28]]
+ 
+# [[1 0 0 0 0]
+ # [1 0 0 0 0]
+ # [1 0 0 0 0]
+ # ...
+ # [1 0 0 0 0]
+ # [1 0 0 0 0]
+ # [1 0 0 0 0]]
+
+BATCH_SIZE = 1024
+BUFFER_SIZE = 10000
+dataset = tf.data.Dataset.from_tensor_slices(((targets, contexts), labels))
+dataset = dataset.shuffle(BUFFER_SIZE).batch(BATCH_SIZE, drop_remainder=True)
+dataset = dataset.cache().prefetch(buffer_size=AUTOTUNE)
+# print(dataset) 
+# <PrefetchDataset element_spec=((TensorSpec(shape=(1024,), dtype=tf.int64, name=None), TensorSpec(shape=(1024, 5), dtype=tf.int64, name=None)), TensorSpec(shape=(1024, 5), dtype=tf.int64, name=None))>
+class Word2Vec(tf.keras.Model):
+  def __init__(self, vocab_size, embedding_dim):
+    super(Word2Vec, self).__init__()
+    self.target_embedding = layers.Embedding(\
+                                             vocab_size, embedding_dim,  input_length=1, name="w2v_embedding")
+    self.context_embedding = layers.Embedding(\
+                                              vocab_size, embedding_dim, input_length=num_ns+1)
+
+  def call(self, pair):
+    target, context = pair
+    # target: (batch, dummy?)  # The dummy axis doesn't exist in TF2.7+
+    # context: (batch, context)
+    if len(target.shape) == 2:
+      target = tf.squeeze(target, axis=1)
+    # target: (batch,)
+    word_emb = self.target_embedding(target)
+    # word_emb: (batch, embed)
+    context_emb = self.context_embedding(context)
+    # context_emb: (batch, context, embed)
+    dots = tf.einsum('be,bce->bc', word_emb, context_emb)
+    # dots: (batch, context)
+    return dots #( batch, context )
+
+def custom_loss(x_logit, y_true):
+      return tf.nn.sigmoid_cross_entropy_with_logits(logits=x_logit, labels=y_true)
+  
+embedding_dim = 128
+word2vec = Word2Vec(vocab_size, embedding_dim)
+word2vec.compile(optimizer='adam', \
+                 loss=tf.keras.losses.CategoricalCrossentropy(from_logits=True), \
+                 metrics=['accuracy'])
+
+word2vec.fit( dataset, epochs = 20 )
+
+weights = word2vec.get_layer('w2v_embedding').get_weights()[0]
+vocab = vectorize_layer.get_vocabulary()
+import io
+out_v = io.open("vectors.tsv", "w", encoding="utf-8")
+out_w = io.open("metadata.tsv","w",encoding="utf-8")
+
+out_v = io.open('vectors.tsv', 'w', encoding='utf-8')
+out_m = io.open('metadata.tsv', 'w', encoding='utf-8')
+
+for index, word in enumerate(vocab):
+    if index == 0:
+        continue  # skip 0, it's padding.
+    vec = weights[index]
+    out_v.write('\t'.join([str(x) for x in vec]) + "\n")
+    out_m.write(word + "\n")
+out_v.close()
+out_m.close()
